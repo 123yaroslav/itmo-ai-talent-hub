@@ -5,3 +5,26 @@
 - Swagger
 
 - Больше на изящность решения, на скор все равно показать топ решение
+
+
+Dataset + EDA: https://github.com/git-disl/EllipticPlusPlus?tab=readme-ov-file 
+
+База решений: https://paperswithcode.com/sota/fraud-detection-on-elliptic-dataset
+
+Крутая работа по эфиру от итмо: https://github.com/mikgur/Ethereum-censorability-monitor/blob/main/notebooks/04%20-%20next_block_tx_classifier-Copy1.ipynb
+
+Boosting vs NN: https://arxiv.org/pdf/2306.06108v1
+
+Очень крутая реализация NN: https://github.com/Rufaim/EvolveGCN
+https://github.com/williamleif/GraphSAGE
+
+
+Модели: 
+https://snap.stanford.edu/graphsage/
+https://paperswithcode.com/method/gcn
+https://paperswithcode.com/method/gat
+https://github.com/B-Deprez/AML_Network
+
+Статьи: 
+https://arxiv.org/pdf/1902.10191
+https://arxiv.org/pdf/1908.02591v1
