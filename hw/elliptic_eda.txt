@@ -1,0 +1,962 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Разведочный анализ данных (EDA) датасета Elliptic++\n",
+    "\n",
+    "**Цель анализа:** исследовать датасет Elliptic++ для выявления закономерностей, которые помогут в построении самообучающейся системы для выявления аномальных транзакций в сети блокчейн."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 1. Загрузка необходимых библиотек"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "import matplotlib.pyplot as plt\n",
+    "import seaborn as sns\n",
+    "import networkx as nx\n",
+    "from sklearn.decomposition import PCA\n",
+    "from sklearn.preprocessing import StandardScaler\n",
+    "\n",
+    "%matplotlib inline\n",
+    "plt.style.use('ggplot')\n",
+    "sns.set(style=\"whitegrid\")\n",
+    "plt.rcParams['figure.figsize'] = (12, 8)\n",
+    "plt.rcParams['font.size'] = 12"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 2. Загрузка данных\n",
+    "\n",
+    "### 2.1 Описание данных Elliptic++\n",
+    "\n",
+    "Датасет Elliptic++ содержит данные о транзакциях Bitcoin и кошельках (адресах). Он включает следующие файлы:\n",
+    "\n",
+    "**Транзакции (transactions):**\n",
+    "- **txs_features.csv** – 203 769 строк, по 183 исходных признака (включая \"временной шаг\", 93 локальных признака и 72 агрегированных) плюс 17 дополнительных, рассчитанных в расширении Elliptic++ (например, суммарный BTC_in/BTC_out, число входящих/исходящих транзакций, число адресов, размер транзакции, комиссии)\n",
+    "- **txs_classes.csv** – метка каждого узла-транзакции: 1 = illicit (незаконные), 2 = licit (законные), 3 = unknown (неизвестные)\n",
+    "- **txs_edgelist.csv** – ориентированные рёбра «транзакция → транзакция», задающие поток средств\n",
+    "\n",
+    "**Акторы (wallet addresses):**\n",
+    "- **wallets_features.csv** – 822 942 адреса, по 56 признаков: статистика отправленных/полученных BTC, комиссии, временные интервалы между операциями, число взаимодействий с другими адресами и т.д.\n",
+    "- **wallets_classes.csv** – метка каждого адреса (illicit/licit/unknown) на основе его связей с помеченными транзакциями\n",
+    "- **AddrAddr_edgelist.csv** – рёбра «адрес → адрес» через общие транзакции\n",
+    "- **AddrTx_edgelist.csv** – рёбра «адрес → транзакция»\n",
+    "- **TxAddr_edgelist.csv** – рёбра «транзакция → адрес»"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Загружаем данные о транзакциях\n",
+    "tx_features = pd.read_csv('data/elliptic-bitcoin/transactions/txs_features.csv')\n",
+    "tx_classes = pd.read_csv('data/elliptic-bitcoin/transactions/txs_classes.csv')\n",
+    "tx_edgelist = pd.read_csv('data/elliptic-bitcoin/transactions/txs_edgelist.csv')\n",
+    "\n",
+    "# Загружаем данные о кошельках (адресах)\n",
+    "wallet_features = pd.read_csv('data/elliptic-bitcoin/actors/wallets_features.csv')\n",
+    "wallet_classes = pd.read_csv('data/elliptic-bitcoin/actors/wallets_classes.csv')\n",
+    "addr_addr_edgelist = pd.read_csv('data/elliptic-bitcoin/actors/AddrAddr_edgelist.csv')\n",
+    "addr_tx_edgelist = pd.read_csv('data/elliptic-bitcoin/actors/AddrTx_edgelist.csv')\n",
+    "tx_addr_edgelist = pd.read_csv('data/elliptic-bitcoin/actors/TxAddr_edgelist.csv')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Проверяем размеры загруженных данных\n",
+    "print(f\"Транзакции (характеристики): {tx_features.shape}\")\n",
+    "print(f\"Транзакции (классы): {tx_classes.shape}\")\n",
+    "print(f\"Транзакции (связи): {tx_edgelist.shape}\")\n",
+    "print(\"\\nКошельки:\")\n",
+    "print(f\"Кошельки (характеристики): {wallet_features.shape}\")\n",
+    "print(f\"Кошельки (классы): {wallet_classes.shape}\")\n",
+    "print(f\"Связи адрес-адрес: {addr_addr_edgelist.shape}\")\n",
+    "print(f\"Связи адрес-транзакция: {addr_tx_edgelist.shape}\")\n",
+    "print(f\"Связи транзакция-адрес: {tx_addr_edgelist.shape}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Преобразуем данные о классах транзакций, добавляя понятные метки\n",
+    "tx_classes['label'] = tx_classes['class'].map({1: 'illicit', 2: 'licit', 3: 'unknown'})\n",
+    "\n",
+    "# Объединяем признаки и классы транзакций\n",
+    "transactions = pd.merge(tx_features, tx_classes, on='txId')\n",
+    "transactions.head()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Добавляем метки классов к данным кошельков\n",
+    "wallet_classes['label_map'] = wallet_classes['class'].map({1: 'illicit', 2: 'licit', 3: 'unknown'})\n",
+    "\n",
+    "# Объединяем признаки и классы кошельков\n",
+    "wallets = pd.merge(wallet_features, wallet_classes, on='address')\n",
+    "wallets.head()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 2.2 Проверка пропущенных значений"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Проверяем пропущенные значения в данных о транзакциях\n",
+    "missing_tx = tx_features.isnull().sum()\n",
+    "missing_tx = missing_tx[missing_tx > 0]\n",
+    "print(f\"Общее количество пропущенных значений в транзакциях: {tx_features.isna().sum().sum()}\")\n",
+    "print(f\"Количество признаков с пропущенными значениями: {len(missing_tx)}\")\n",
+    "if len(missing_tx) > 0:\n",
+    "    print(\"\\nПризнаки с пропущенными значениями:\")\n",
+    "    print(missing_tx)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Проверяем пропущенные значения в данных о кошельках\n",
+    "missing_wallets = wallet_features.isnull().sum()\n",
+    "missing_wallets = missing_wallets[missing_wallets > 0]\n",
+    "print(f\"Общее количество пропущенных значений в кошельках: {wallet_features.isna().sum().sum()}\")\n",
+    "print(f\"Количество признаков с пропущенными значениями: {len(missing_wallets)}\")\n",
+    "if len(missing_wallets) > 0:\n",
+    "    print(\"\\nПризнаки с пропущенными значениями:\")\n",
+    "    print(missing_wallets)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 2.3 Очистка данных и заполнение пропущенных значений"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Заполняем пропущенные значения в данных о транзакциях медианными значениями\n",
+    "transactions_clean = transactions.copy()\n",
+    "for col in transactions.select_dtypes(include=['float64', 'int64']).columns:\n",
+    "    if transactions[col].isnull().sum() > 0:\n",
+    "        transactions_clean[col] = transactions[col].fillna(transactions[col].median())\n",
+    "\n",
+    "print(f\"Количество пропущенных значений после очистки: {transactions_clean.isnull().sum().sum()}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 3. Анализ данных транзакций\n",
+    "\n",
+    "### 3.1 Распределение классов транзакций"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Распределение транзакций по классам\n",
+    "class_counts = transactions_clean['label'].value_counts()\n",
+    "print(\"Распределение транзакций по классам:\")\n",
+    "print(class_counts)\n",
+    "print(\"\\nПроцентное соотношение:\")\n",
+    "print((class_counts / len(transactions_clean) * 100).round(2))\n",
+    "\n",
+    "# Визуализация распределения классов\n",
+    "plt.figure(figsize=(10, 6))\n",
+    "ax = sns.countplot(x='label', data=transactions_clean, palette='viridis')\n",
+    "plt.title('Распределение транзакций по классам', fontsize=16)\n",
+    "plt.xlabel('Класс транзакции', fontsize=14)\n",
+    "plt.ylabel('Количество транзакций', fontsize=14)\n",
+    "\n",
+    "# Добавляем подписи с количеством и процентами\n",
+    "total = len(transactions_clean)\n",
+    "for p in ax.patches:\n",
+    "    height = p.get_height()\n",
+    "    ax.text(p.get_x() + p.get_width()/2., height + 0.1, \n",
+    "            f'{height:,}\\n({height/total*100:.1f}%)',\n",
+    "            ha=\"center\")\n",
+    "    \n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 3.2 Анализ временных шагов"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Распределение транзакций по временным шагам\n",
+    "time_counts = transactions_clean['Time step'].value_counts().sort_index()\n",
+    "print(\"Количество временных шагов:\", transactions_clean['Time step'].nunique())\n",
+    "\n",
+    "plt.figure(figsize=(14, 6))\n",
+    "ax = sns.lineplot(x=time_counts.index, y=time_counts.values, marker='o', linewidth=2)\n",
+    "plt.title('Количество транзакций по временным шагам', fontsize=16)\n",
+    "plt.xlabel('Временной шаг', fontsize=14)\n",
+    "plt.ylabel('Количество транзакций', fontsize=14)\n",
+    "plt.grid(True)\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Анализ распределения классов по временным шагам\n",
+    "time_class = transactions_clean.groupby(['Time step', 'label']).size().unstack(fill_value=0)\n",
+    "print(\"Распределение классов по временным шагам:\")\n",
+    "print(time_class.head())\n",
+    "\n",
+    "# Визуализация распределения классов по времени\n",
+    "plt.figure(figsize=(16, 8))\n",
+    "time_class.plot(kind='bar', stacked=True, figsize=(16, 8))\n",
+    "plt.title('Распределение классов транзакций по временным шагам', fontsize=16)\n",
+    "plt.xlabel('Временной шаг', fontsize=14)\n",
+    "plt.ylabel('Количество транзакций', fontsize=14)\n",
+    "plt.legend(title='Класс транзакции', fontsize=12)\n",
+    "plt.xticks(rotation=45)\n",
+    "plt.grid(True, axis='y')\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 3.3 Анализ признаков транзакций"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Выделяем дополнительные признаки транзакций (последние 17 столбцов)\n",
+    "add_features = transactions_clean.iloc[:, -20:-3]  # Исключаем txId, class и label\n",
+    "print(\"Дополнительные признаки транзакций:\")\n",
+    "add_features.head()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Статистика по дополнительным признакам\n",
+    "add_features_stats = add_features.describe()\n",
+    "print(\"Статистика по дополнительным признакам транзакций:\")\n",
+    "add_features_stats"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Сравнение ключевых признаков по классам транзакций\n",
+    "key_features = ['in_degree', 'out_degree', 'in_BTC_total', 'out_BTC_total', 'total_BTC', 'fees', 'size']\n",
+    "stats_by_class = transactions_clean.groupby('label')[key_features].agg(['mean', 'median', 'min', 'max', 'std'])\n",
+    "print(\"Статистика по ключевым признакам для разных классов транзакций:\")\n",
+    "stats_by_class"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Визуализация распределения ключевых признаков по классам\n",
+    "fig, axes = plt.subplots(2, 2, figsize=(16, 12))\n",
+    "axes = axes.flatten()\n",
+    "\n",
+    "for i, feature in enumerate(['in_degree', 'out_degree', 'in_BTC_total', 'out_BTC_total']):\n",
+    "    ax = axes[i]\n",
+    "    sns.boxplot(x='label', y=feature, data=transactions_clean, palette='viridis', showfliers=False, ax=ax)\n",
+    "    ax.set_title(f'Распределение {feature} по классам', fontsize=14)\n",
+    "    ax.set_xlabel('Класс транзакции', fontsize=12)\n",
+    "    ax.set_ylabel(feature, fontsize=12)\n",
+    "    ax.grid(True, axis='y')\n",
+    "    \n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Корреляционная матрица для дополнительных признаков\n",
+    "correlation_matrix = add_features.corr()\n",
+    "\n",
+    "# Визуализация корреляционной матрицы\n",
+    "plt.figure(figsize=(16, 12))\n",
+    "mask = np.triu(np.ones_like(correlation_matrix, dtype=bool))\n",
+    "sns.heatmap(correlation_matrix, mask=mask, cmap='viridis', annot=True, fmt='.2f', \n",
+    "            square=True, linewidths=.5, cbar_kws={\"shrink\": .7})\n",
+    "plt.title('Корреляционная матрица дополнительных признаков транзакций', fontsize=16)\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Находим сильно коррелирующие признаки (|r| > 0.8)\n",
+    "high_correlations = []\n",
+    "for i in range(len(correlation_matrix.columns)):\n",
+    "    for j in range(i+1, len(correlation_matrix.columns)):\n",
+    "        if abs(correlation_matrix.iloc[i, j]) > 0.8:\n",
+    "            high_correlations.append((\n",
+    "                correlation_matrix.columns[i], \n",
+    "                correlation_matrix.columns[j], \n",
+    "                correlation_matrix.iloc[i, j]\n",
+    "            ))\n",
+    "\n",
+    "print(\"Сильно коррелирующие признаки (|r| > 0.8):\")\n",
+    "for feat1, feat2, corr in sorted(high_correlations, key=lambda x: abs(x[2]), reverse=True):\n",
+    "    print(f\"{feat1} и {feat2}: {corr:.3f}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 3.4 Снижение размерности и визуализация данных"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Применяем PCA для визуализации данных\n",
+    "# Выбираем числовые признаки\n",
+    "numeric_features = transactions_clean.select_dtypes(include=['float64', 'int64'])\n",
+    "numeric_features = numeric_features.drop(['txId', 'class'], axis=1, errors='ignore')\n",
+    "\n",
+    "# Стандартизация данных\n",
+    "scaler = StandardScaler()\n",
+    "scaled_features = scaler.fit_transform(numeric_features)\n",
+    "\n",
+    "# Применяем PCA\n",
+    "pca = PCA(n_components=2)\n",
+    "principal_components = pca.fit_transform(scaled_features)\n",
+    "\n",
+    "# Создаем датафрейм с результатами PCA\n",
+    "pca_df = pd.DataFrame(data=principal_components, columns=['PC1', 'PC2'])\n",
+    "pca_df['label'] = transactions_clean['label'].values\n",
+    "\n",
+    "# Визуализируем результаты PCA\n",
+    "plt.figure(figsize=(12, 8))\n",
+    "sns.scatterplot(x='PC1', y='PC2', hue='label', data=pca_df, palette='viridis', alpha=0.6, s=50)\n",
+    "plt.title('PCA транзакций по классам', fontsize=16)\n",
+    "plt.xlabel('Главная компонента 1', fontsize=14)\n",
+    "plt.ylabel('Главная компонента 2', fontsize=14)\n",
+    "plt.legend(title='Класс транзакции', fontsize=12)\n",
+    "plt.grid(True)\n",
+    "plt.tight_layout()\n",
+    "plt.show()\n",
+    "\n",
+    "# Информация о дисперсии, объясненной главными компонентами\n",
+    "explained_variance = pca.explained_variance_ratio_\n",
+    "print(f\"Объясненная дисперсия по компонентам: {explained_variance}\")\n",
+    "print(f\"Суммарная объясненная дисперсия: {sum(explained_variance):.2f}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 4. Анализ данных кошельков (адресов)\n",
+    "\n",
+    "### 4.1 Общая информация о кошельках"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Базовая информация о данных кошельков\n",
+    "print(f\"Общее количество кошельков: {wallets.shape[0]}\")\n",
+    "print(f\"Количество признаков: {wallets.shape[1]-3}\") # Исключаем address, class и label_map\n",
+    "\n",
+    "# Проверяем количество пропущенных значений\n",
+    "missing_values_wallets = wallets.isnull().sum()\n",
+    "missing_percent_wallets = (missing_values_wallets / len(wallets)) * 100\n",
+    "missing_data_wallets = pd.DataFrame({'Missing Values': missing_values_wallets, 'Percent': missing_percent_wallets})\n",
+    "missing_data_wallets = missing_data_wallets[missing_data_wallets['Missing Values'] > 0]\n",
+    "print(f\"\\nКоличество признаков с пропущенными значениями: {len(missing_data_wallets)}\")\n",
+    "if len(missing_data_wallets) > 0:\n",
+    "    print(\"Признаки с пропущенными значениями:\")\n",
+    "    print(missing_data_wallets.sort_values('Percent', ascending=False))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Распределение классов кошельков\n",
+    "wallet_class_counts = wallets['label_map'].value_counts()\n",
+    "print(\"Распределение кошельков по классам:\")\n",
+    "print(wallet_class_counts)\n",
+    "print(\"\\nПроцентное соотношение:\")\n",
+    "print((wallet_class_counts / len(wallets) * 100).round(2))\n",
+    "\n",
+    "# Визуализация распределения классов кошельков\n",
+    "plt.figure(figsize=(10, 6))\n",
+    "ax = sns.countplot(x='label_map', data=wallets, palette='viridis')\n",
+    "plt.title('Распределение кошельков по классам', fontsize=16)\n",
+    "plt.xlabel('Класс кошелька', fontsize=14)\n",
+    "plt.ylabel('Количество кошельков', fontsize=14)\n",
+    "\n",
+    "# Добавляем подписи с количеством и процентами\n",
+    "total_wallets = len(wallets)\n",
+    "for p in ax.patches:\n",
+    "    height = p.get_height()\n",
+    "    ax.text(p.get_x() + p.get_width()/2., height + 0.1, \n",
+    "            f'{height:,}\\n({height/total_wallets*100:.1f}%)',\n",
+    "            ha=\"center\")\n",
+    "    \n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 4.2 Анализ признаков кошельков"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Выбираем числовые признаки кошельков\n",
+    "wallet_numeric = wallets.select_dtypes(include=['float64', 'int64'])\n",
+    "wallet_numeric = wallet_numeric.drop(['address', 'class'], axis=1, errors='ignore')\n",
+    "\n",
+    "# Статистика по числовым признакам\n",
+    "wallet_numeric_stats = wallet_numeric.describe()\n",
+    "print(\"Статистика по числовым признакам кошельков:\")\n",
+    "wallet_numeric_stats.T.sort_values('mean', ascending=False).head(10)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Сравнение ключевых признаков по классам кошельков\n",
+    "key_wallet_features = [\n",
+    "    'total_received', 'total_spent', 'num_active', 'num_tx_as_input', 'num_tx_as_output', \n",
+    "    'total_balance', 'mean_tx_value', 'mean_input_value', 'mean_output_value'\n",
+    "]\n",
+    "\n",
+    "wallet_stats_by_class = wallets.groupby('label_map')[key_wallet_features].agg(['mean', 'median', 'min', 'max', 'std'])\n",
+    "print(\"Статистика по ключевым признакам для разных классов кошельков:\")\n",
+    "wallet_stats_by_class['mean']"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Визуализация распределения ключевых признаков кошельков по классам\n",
+    "fig, axes = plt.subplots(2, 2, figsize=(16, 12))\n",
+    "axes = axes.flatten()\n",
+    "\n",
+    "for i, feature in enumerate(['total_received', 'total_spent', 'num_tx_as_input', 'num_tx_as_output']):\n",
+    "    ax = axes[i]\n",
+    "    sns.boxplot(x='label_map', y=feature, data=wallets, palette='viridis', showfliers=False, ax=ax)\n",
+    "    ax.set_title(f'Распределение {feature} по классам', fontsize=14)\n",
+    "    ax.set_xlabel('Класс кошелька', fontsize=12)\n",
+    "    ax.set_ylabel(feature, fontsize=12)\n",
+    "    ax.grid(True, axis='y')\n",
+    "    \n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Корреляция ключевых признаков кошельков\n",
+    "wallet_correlation = wallet_numeric[key_wallet_features].corr()\n",
+    "\n",
+    "# Визуализация корреляционной матрицы\n",
+    "plt.figure(figsize=(14, 10))\n",
+    "mask = np.triu(np.ones_like(wallet_correlation, dtype=bool))\n",
+    "sns.heatmap(wallet_correlation, mask=mask, cmap='viridis', annot=True, fmt='.2f', \n",
+    "            square=True, linewidths=.5, cbar_kws={\"shrink\": .7})\n",
+    "plt.title('Корреляционная матрица ключевых признаков кошельков', fontsize=16)\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 4.3 Снижение размерности и визуализация данных кошельков"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Применяем PCA для визуализации данных кошельков\n",
+    "# Стандартизация данных\n",
+    "wallet_scaler = StandardScaler()\n",
+    "wallet_scaled_features = wallet_scaler.fit_transform(wallet_numeric)\n",
+    "\n",
+    "# Применяем PCA\n",
+    "wallet_pca = PCA(n_components=2)\n",
+    "wallet_principal_components = wallet_pca.fit_transform(wallet_scaled_features)\n",
+    "\n",
+    "# Создаем датафрейм с результатами PCA\n",
+    "wallet_pca_df = pd.DataFrame(data=wallet_principal_components, columns=['PC1', 'PC2'])\n",
+    "wallet_pca_df['label'] = wallets['label_map'].values\n",
+    "\n",
+    "# Визуализируем результаты PCA\n",
+    "plt.figure(figsize=(12, 8))\n",
+    "sns.scatterplot(x='PC1', y='PC2', hue='label', data=wallet_pca_df, palette='viridis', alpha=0.6, s=50)\n",
+    "plt.title('PCA кошельков по классам', fontsize=16)\n",
+    "plt.xlabel('Главная компонента 1', fontsize=14)\n",
+    "plt.ylabel('Главная компонента 2', fontsize=14)\n",
+    "plt.legend(title='Класс кошелька', fontsize=12)\n",
+    "plt.grid(True)\n",
+    "plt.tight_layout()\n",
+    "plt.show()\n",
+    "\n",
+    "# Информация о дисперсии, объясненной главными компонентами\n",
+    "wallet_explained_variance = wallet_pca.explained_variance_ratio_\n",
+    "print(f\"Объясненная дисперсия по компонентам: {wallet_explained_variance}\")\n",
+    "print(f\"Суммарная объясненная дисперсия: {sum(wallet_explained_variance):.2f}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 5. Анализ графовой структуры\n",
+    "\n",
+    "### 5.1 Анализ сети транзакций"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Исследуем структуру графа транзакций\n",
+    "print(f\"Количество узлов (транзакций): {tx_classes.shape[0]}\")\n",
+    "print(f\"Количество рёбер (переводов между транзакциями): {tx_edgelist.shape[0]}\")\n",
+    "\n",
+    "# Создаем направленный граф транзакций\n",
+    "tx_graph = nx.DiGraph()\n",
+    "\n",
+    "# Ограничим размер графа для визуализации\n",
+    "max_edges = 10000  # Ограничение для визуализации\n",
+    "edge_sample = tx_edgelist.sample(min(max_edges, len(tx_edgelist)))\n",
+    "\n",
+    "# Добавляем ребра\n",
+    "for _, edge in edge_sample.iterrows():\n",
+    "    tx_graph.add_edge(edge['txId1'], edge['txId2'], weight=edge['weight'])\n",
+    "\n",
+    "# Анализ графа\n",
+    "print(f\"Количество узлов в графе: {tx_graph.number_of_nodes()}\")\n",
+    "print(f\"Количество рёбер в графе: {tx_graph.number_of_edges()}\")\n",
+    "print(f\"Плотность графа: {nx.density(tx_graph):.6f}\")\n",
+    "\n",
+    "# Находим компоненты графа\n",
+    "undirected_graph = tx_graph.to_undirected()\n",
+    "connected_components = list(nx.connected_components(undirected_graph))\n",
+    "print(f\"Количество компонент связности: {len(connected_components)}\")\n",
+    "component_sizes = [len(component) for component in connected_components]\n",
+    "print(f\"Размер наибольшей компоненты: {max(component_sizes)}\")\n",
+    "print(f\"Средний размер компоненты: {np.mean(component_sizes):.2f}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Визуализация распределения размеров компонент\n",
+    "plt.figure(figsize=(12, 6))\n",
+    "plt.hist(component_sizes, bins=50, alpha=0.7, color='steelblue')\n",
+    "plt.title('Распределение размеров компонент связности', fontsize=16)\n",
+    "plt.xlabel('Размер компоненты', fontsize=14)\n",
+    "plt.ylabel('Количество компонент', fontsize=14)\n",
+    "plt.grid(True)\n",
+    "plt.yscale('log')  # Логарифмическая шкала для лучшей визуализации\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Анализ степеней узлов\n",
+    "in_degrees = dict(tx_graph.in_degree())\n",
+    "out_degrees = dict(tx_graph.out_degree())\n",
+    "\n",
+    "in_degree_values = list(in_degrees.values())\n",
+    "out_degree_values = list(out_degrees.values())\n",
+    "\n",
+    "print(\"Статистика по входящим степеням:\")\n",
+    "print(f\"Минимум: {min(in_degree_values)}\")\n",
+    "print(f\"Максимум: {max(in_degree_values)}\")\n",
+    "print(f\"Среднее: {np.mean(in_degree_values):.2f}\")\n",
+    "print(f\"Медиана: {np.median(in_degree_values)}\")\n",
+    "\n",
+    "print(\"\\nСтатистика по исходящим степеням:\")\n",
+    "print(f\"Минимум: {min(out_degree_values)}\")\n",
+    "print(f\"Максимум: {max(out_degree_values)}\")\n",
+    "print(f\"Среднее: {np.mean(out_degree_values):.2f}\")\n",
+    "print(f\"Медиана: {np.median(out_degree_values)}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Визуализация распределения степеней\n",
+    "fig, axes = plt.subplots(1, 2, figsize=(16, 6))\n",
+    "\n",
+    "# Распределение входящих степеней\n",
+    "bins = np.logspace(0, np.log10(max(in_degree_values) + 1), 20)\n",
+    "axes[0].hist(in_degree_values, bins=bins, alpha=0.7, color='steelblue')\n",
+    "axes[0].set_title('Распределение входящих степеней', fontsize=14)\n",
+    "axes[0].set_xlabel('Входящая степень', fontsize=12)\n",
+    "axes[0].set_ylabel('Количество узлов', fontsize=12)\n",
+    "axes[0].set_xscale('log')\n",
+    "axes[0].set_yscale('log')\n",
+    "axes[0].grid(True)\n",
+    "\n",
+    "# Распределение исходящих степеней\n",
+    "bins = np.logspace(0, np.log10(max(out_degree_values) + 1), 20)\n",
+    "axes[1].hist(out_degree_values, bins=bins, alpha=0.7, color='green')\n",
+    "axes[1].set_title('Распределение исходящих степеней', fontsize=14)\n",
+    "axes[1].set_xlabel('Исходящая степень', fontsize=12)\n",
+    "axes[1].set_ylabel('Количество узлов', fontsize=12)\n",
+    "axes[1].set_xscale('log')\n",
+    "axes[1].set_yscale('log')\n",
+    "axes[1].grid(True)\n",
+    "\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 5.2 Анализ сети кошельков"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Исследуем структуру графа кошельков\n",
+    "print(f\"Количество узлов (кошельков): {wallet_classes.shape[0]}\")\n",
+    "print(f\"Количество рёбер (связей между кошельками): {addr_addr_edgelist.shape[0]}\")\n",
+    "\n",
+    "# Создаем направленный граф кошельков\n",
+    "wallet_graph = nx.DiGraph()\n",
+    "\n",
+    "# Ограничим размер графа для визуализации\n",
+    "max_wallet_edges = 10000  # Ограничение для визуализации\n",
+    "wallet_edge_sample = addr_addr_edgelist.sample(min(max_wallet_edges, len(addr_addr_edgelist)))\n",
+    "\n",
+    "# Добавляем ребра\n",
+    "for _, edge in wallet_edge_sample.iterrows():\n",
+    "    wallet_graph.add_edge(edge['address1'], edge['address2'], weight=edge['weight'])\n",
+    "\n",
+    "# Анализ графа\n",
+    "print(f\"Количество узлов в графе кошельков: {wallet_graph.number_of_nodes()}\")\n",
+    "print(f\"Количество рёбер в графе кошельков: {wallet_graph.number_of_edges()}\")\n",
+    "print(f\"Плотность графа кошельков: {nx.density(wallet_graph):.8f}\")\n",
+    "\n",
+    "# Находим компоненты графа\n",
+    "undirected_wallet_graph = wallet_graph.to_undirected()\n",
+    "wallet_connected_components = list(nx.connected_components(undirected_wallet_graph))\n",
+    "print(f\"Количество компонент связности: {len(wallet_connected_components)}\")\n",
+    "wallet_component_sizes = [len(component) for component in wallet_connected_components]\n",
+    "print(f\"Размер наибольшей компоненты: {max(wallet_component_sizes)}\")\n",
+    "print(f\"Средний размер компоненты: {np.mean(wallet_component_sizes):.2f}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Анализ степеней узлов в графе кошельков\n",
+    "wallet_in_degrees = dict(wallet_graph.in_degree())\n",
+    "wallet_out_degrees = dict(wallet_graph.out_degree())\n",
+    "\n",
+    "wallet_in_degree_values = list(wallet_in_degrees.values())\n",
+    "wallet_out_degree_values = list(wallet_out_degrees.values())\n",
+    "\n",
+    "print(\"Статистика по входящим степеням кошельков:\")\n",
+    "print(f\"Минимум: {min(wallet_in_degree_values)}\")\n",
+    "print(f\"Максимум: {max(wallet_in_degree_values)}\")\n",
+    "print(f\"Среднее: {np.mean(wallet_in_degree_values):.2f}\")\n",
+    "print(f\"Медиана: {np.median(wallet_in_degree_values)}\")\n",
+    "\n",
+    "print(\"\\nСтатистика по исходящим степеням кошельков:\")\n",
+    "print(f\"Минимум: {min(wallet_out_degree_values)}\")\n",
+    "print(f\"Максимум: {max(wallet_out_degree_values)}\")\n",
+    "print(f\"Среднее: {np.mean(wallet_out_degree_values):.2f}\")\n",
+    "print(f\"Медиана: {np.median(wallet_out_degree_values)}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 5.3 Анализ взаимосвязей между кошельками и транзакциями"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Анализ связей кошелек-транзакция и транзакция-кошелек\n",
+    "print(f\"Количество связей адрес-транзакция: {addr_tx_edgelist.shape[0]}\")\n",
+    "print(f\"Количество связей транзакция-адрес: {tx_addr_edgelist.shape[0]}\")\n",
+    "\n",
+    "# Статистика по количеству транзакций на кошелек\n",
+    "addr_tx_counts = addr_tx_edgelist['address'].value_counts()\n",
+    "tx_addr_counts = tx_addr_edgelist['address'].value_counts()\n",
+    "\n",
+    "print(\"\\nСтатистика по исходящим транзакциям на кошелек:\")\n",
+    "print(f\"Минимум: {min(addr_tx_counts)}\")\n",
+    "print(f\"Максимум: {max(addr_tx_counts)}\")\n",
+    "print(f\"Среднее: {np.mean(addr_tx_counts):.2f}\")\n",
+    "print(f\"Медиана: {np.median(addr_tx_counts)}\")\n",
+    "\n",
+    "print(\"\\nСтатистика по входящим транзакциям на кошелек:\")\n",
+    "print(f\"Минимум: {min(tx_addr_counts)}\")\n",
+    "print(f\"Максимум: {max(tx_addr_counts)}\")\n",
+    "print(f\"Среднее: {np.mean(tx_addr_counts):.2f}\")\n",
+    "print(f\"Медиана: {np.median(tx_addr_counts)}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Визуализация распределения количества транзакций на кошелек\n",
+    "fig, axes = plt.subplots(1, 2, figsize=(16, 6))\n",
+    "\n",
+    "# Распределение исходящих транзакций\n",
+    "addr_tx_counts_values = addr_tx_counts.values\n",
+    "bins_out = np.logspace(0, np.log10(max(addr_tx_counts_values) + 1), 20)\n",
+    "axes[0].hist(addr_tx_counts_values, bins=bins_out, alpha=0.7, color='steelblue')\n",
+    "axes[0].set_title('Распределение исходящих транзакций на кошелек', fontsize=14)\n",
+    "axes[0].set_xlabel('Количество исходящих транзакций', fontsize=12)\n",
+    "axes[0].set_ylabel('Количество кошельков', fontsize=12)\n",
+    "axes[0].set_xscale('log')\n",
+    "axes[0].set_yscale('log')\n",
+    "axes[0].grid(True)\n",
+    "\n",
+    "# Распределение входящих транзакций\n",
+    "tx_addr_counts_values = tx_addr_counts.values\n",
+    "bins_in = np.logspace(0, np.log10(max(tx_addr_counts_values) + 1), 20)\n",
+    "axes[1].hist(tx_addr_counts_values, bins=bins_in, alpha=0.7, color='green')\n",
+    "axes[1].set_title('Распределение входящих транзакций на кошелек', fontsize=14)\n",
+    "axes[1].set_xlabel('Количество входящих транзакций', fontsize=12)\n",
+    "axes[1].set_ylabel('Количество кошельков', fontsize=12)\n",
+    "axes[1].set_xscale('log')\n",
+    "axes[1].set_yscale('log')\n",
+    "axes[1].grid(True)\n",
+    "\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 6. Выводы по результатам анализа\n",
+    "\n",
+    "### 6.1 Основные закономерности и выводы\n",
+    "\n",
+    "Проведенный разведочный анализ данных Elliptic++ позволил выявить ряд важных закономерностей и особенностей, которые могут быть использованы для построения самообучающейся системы выявления аномальных транзакций в сети блокчейн:\n",
+    "\n",
+    "1. **Распределение классов**:\n",
+    "   - Большая часть транзакций и адресов имеет неизвестную метку класса (unknown), что создает проблему дисбаланса классов и потребует специальных методов при построении модели.\n",
+    "   - Незаконные транзакции (illicit) составляют наименьшую долю в датасете, что соответствует реальности, но усложняет их обнаружение.\n",
+    "\n",
+    "2. **Временная динамика**:\n",
+    "   - Количество транзакций варьируется по временным шагам, что говорит о непостоянстве активности в сети.\n",
+    "   - Соотношение законных и незаконных транзакций меняется со временем, что может указывать на периоды повышенной активности мошенников.\n",
+    "\n",
+    "3. **Характеристики транзакций**:\n",
+    "   - Незаконные транзакции имеют отличительные признаки от законных по ряду параметров (объем BTC, количество входящих и исходящих связей, размер комиссии).\n",
+    "   - Высокая корреляция между некоторыми признаками (например, между входящими и исходящими степенями, объемами) указывает на возможность снижения размерности данных.\n",
+    "\n",
+    "4. **Характеристики кошельков**:\n",
+    "   - Кошельки с незаконными транзакциями имеют характерные паттерны использования (меньшее количество транзакций, но большие объемы).\n",
+    "   - Значительные различия в среднем балансе, частоте операций и других показателях между законными и незаконными кошельками.\n",
+    "\n",
+    "5. **Графовая структура**:\n",
+    "   - Сеть транзакций и кошельков имеет низкую плотность, что характерно для социальных и финансовых сетей.\n",
+    "   - Распределение степеней узлов близко к степенному закону, что указывает на наличие хабов (узлов с высокой связностью).\n",
+    "   - Присутствие множества отдельных компонент связности разного размера указывает на кластеризацию транзакций и кошельков.\n",
+    "   - Анализ графовой структуры выявляет сильную взаимосвязь между кошельками и транзакциями, что важно для выявления сетей мошенников.\n",
+    "\n",
+    "### 6.2 Рекомендации для построения модели выявления аномалий\n",
+    "\n",
+    "На основе проведенного анализа можно сформулировать следующие рекомендации для построения модели выявления аномальных транзакций:\n",
+    "\n",
+    "1. **Использование графовых нейронных сетей (GNN)**:\n",
+    "   - Структура данных Elliptic++ естественным образом представляется в виде графа, где узлами являются транзакции и кошельки, а ребрами - переводы между ними.\n",
+    "   - GNN способны учитывать как признаки узлов, так и структуру связей между ними, что критически важно для выявления сетей мошенников.\n",
+    "   - Рекомендуется использовать архитектуры, способные работать с гетерогенными графами (транзакции и кошельки как разные типы узлов).\n",
+    "\n",
+    "2. **Борьба с дисбалансом классов**:\n",
+    "   - Применение методов взвешивания классов или специальных функций потерь (например, focal loss).\n",
+    "   - Использование техник сэмплирования данных (SMOTE, ADASYN) для генерации синтетических примеров незаконных транзакций.\n",
+    "   - Разработка методов обучения с полу-контролируемым подходом (semi-supervised learning) для использования неразмеченных данных.\n",
+    "\n",
+    "3. **Инженерия признаков**:\n",
+    "   - Создание агрегированных признаков на основе графового окружения (например, средний баланс соседних кошельков, доля незаконных транзакций в окружении).\n",
+    "   - Использование временных признаков для учета динамики транзакций.\n",
+    "   - Применение методов снижения размерности для избежания переобучения модели.\n",
+    "\n",
+    "4. **Учет временной составляющей**:\n",
+    "   - Использование рекуррентных нейронных сетей или темпоральных графовых нейронных сетей для учета временной динамики.\n",
+    "   - Построение признаков, отражающих изменение активности во времени.\n",
+    "\n",
+    "5. **Объяснимость модели**:\n",
+    "   - Разработка методов для интерпретации результатов модели, позволяющих понять, почему определенная транзакция/кошелек классифицированы как незаконные.\n",
+    "   - Использование методов выделения подграфов, которые наиболее способствуют классификации транзакции как незаконной.\n",
+    "\n",
+    "Такой подход, основанный на графовых нейронных сетях и комплексном использовании признаков транзакций и кошельков, позволит создать эффективную самообучающуюся систему для выявления аномальных транзакций в сети блокчейн."
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.8.5"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+} 

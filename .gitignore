@@ -1,0 +1,8 @@
+.venv/
+.ipynb_checkpoints/
+__pycache__/
+hw/data/elliptic-bitcoin/
+hw/data/elliptic-bitcoin/actors/AddrTx_edgelist.csv
+hw/data/elliptic-bitcoin/actors/AddrTx_edgelist.csv
+hw/data/elliptic-bitcoin/actors/TxAddr_edgelist.csv
+hw/data/elliptic-bitcoin/actors/wallets_classes.csv
