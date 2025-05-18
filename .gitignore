@@ -6,3 +6,4 @@ hw/data/elliptic-bitcoin/actors/AddrTx_edgelist.csv
 hw/data/elliptic-bitcoin/actors/AddrTx_edgelist.csv
 hw/data/elliptic-bitcoin/actors/TxAddr_edgelist.csv
 hw/data/elliptic-bitcoin/actors/wallets_classes.csv
+hw/catboost_info

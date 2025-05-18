@@ -28,3 +28,18 @@ https://github.com/B-Deprez/AML_Network
 Статьи: 
 https://arxiv.org/pdf/1902.10191
 https://arxiv.org/pdf/1908.02591v1
+
+
+
+
+-------
+на сколько подмножество unknown похоже на легальные не легальные
+
+на примере лучшей модели в бинарном попробовать ту же модель обучить на мультикласс. если драматическое снижение метрики то так прямо и писать
+
+все это делается до подбора гиперпараметров. OPTUNA сделать гиперпараметров
+
+https://habr.com/ru/articles/704432/#sampler_pruner
+https://optuna.readthedocs.io/en/stable/tutorial/10_key_features/003_efficient_optimization_algorithms.html#which-sampler-and-pruner-should-be-used
+https://optuna.readthedocs.io/en/stable/reference/visualization/index.html
+
